@@ -29,6 +29,12 @@ describe HTTParty::Response do
     it "should set body" do
       @response.body.should == @body
     end
+    
+    it "should inflect its body, code, and message" do
+      [:body, :code, :message].each do |method|
+        @response.respond_to?(method).should be true
+      end
+    end
   end
   
   it "should be able to set headers during initialization" do
