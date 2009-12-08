@@ -1,5 +1,6 @@
 module HTTParty
-  class Response < BasicObject #:nodoc:
+
+  class Response < HTTParty::BasicObject #:nodoc:
     RESPONDS_TO = /^((body|code|message|headers)=?|delegate)$/
     attr_accessor :body, :code, :message, :headers
     attr_reader :delegate

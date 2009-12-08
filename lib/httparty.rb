@@ -11,20 +11,19 @@ require dir + 'httparty/module_inheritable_attributes'
 require dir + 'httparty/cookie_hash'
 
 module HTTParty
-  
-  AllowedFormats = {
-    'text/xml'               => :xml,
-    'application/xml'        => :xml,
-    'application/json'       => :json,
-    'text/json'              => :json,
-    'application/javascript' => :json,
-    'text/javascript'        => :json,
-    'text/html'              => :html,
-    'application/x-yaml'     => :yaml,
-    'text/yaml'              => :yaml,
-    'text/plain'             => :plain
-  } unless defined?(AllowedFormats)
-  
+  module AllowedFormatsDeprecation
+    def const_missing(const)
+      if const.to_s =~ /AllowedFormats$/
+        Kernel.warn("Deprecated: Use HTTParty::Parser::SupportedFormats")
+        HTTParty::Parser::SupportedFormats
+      else
+        super
+      end
+    end
+  end
+
+  extend AllowedFormatsDeprecation
+
   def self.included(base)
     base.extend ClassMethods
     base.send :include, HTTParty::ModuleInheritableAttributes
@@ -33,8 +32,10 @@ module HTTParty
     base.instance_variable_set("@default_options", {})
     base.instance_variable_set("@default_cookies", CookieHash.new)
   end
-  
+
   module ClassMethods
+    extend AllowedFormatsDeprecation
+
     # Allows setting http proxy information to be used
     #
     #   class Foo
@@ -45,7 +46,7 @@ module HTTParty
       default_options[:http_proxyaddr] = addr
       default_options[:http_proxyport] = port
     end
-    
+
     # Allows setting a base uri to be used for each request.
     # Will normalize uri to include http, etc.
     #
@@ -57,7 +58,7 @@ module HTTParty
       return default_options[:base_uri] unless uri
       default_options[:base_uri] = HTTParty.normalize_base_uri(uri)
     end
-    
+
     # Allows setting basic authentication username and password.
     #
     #   class Foo
@@ -67,7 +68,7 @@ module HTTParty
     def basic_auth(u, p)
       default_options[:basic_auth] = {:username => u, :password => p}
     end
-    
+
     # Allows setting default parameters to be appended to each request.
     # Great for api keys and such.
     #
@@ -80,7 +81,7 @@ module HTTParty
       default_options[:default_params] ||= {}
       default_options[:default_params].merge!(h)
     end
-    
+
     # Allows setting a base uri to be used for each request.
     #
     #   class Foo
@@ -97,7 +98,7 @@ module HTTParty
       raise ArgumentError, 'Cookies must be a hash' unless h.is_a?(Hash)
       default_cookies.add_cookies(h)
     end
-    
+
     # Allows setting the format with which to parse.
     # Must be one of the allowed formats ie: json, xml
     #
@@ -105,47 +106,67 @@ module HTTParty
     #     include HTTParty
     #     format :json
     #   end
-    def format(f)
-      raise UnsupportedFormat, "Must be one of: #{AllowedFormats.values.map { |v| v.to_s }.uniq.sort.join(', ')}" unless AllowedFormats.value?(f)
-      default_options[:format] = f
+    def format(f = nil)
+      if f.nil?
+        default_options[:format]
+      else
+        parser(Parser) if parser.nil?
+        default_options[:format] = f
+        validate_format
+      end
     end
-    
+
+    # Allows setting a PEM file to be used
+    #
+    #   class Foo
+    #     include HTTParty
+    #     pem File.read('/home/user/my.pem')
+    #   end
+    def pem(pem_contents)
+      default_options[:pem] = pem_contents
+    end
+
     # Allows setting a custom parser for the response.
     #
     #   class Foo
     #     include HTTParty
     #     parser Proc.new {|data| ...}
     #   end
-    def parser(customer_parser)
-      default_options[:parser] = customer_parser
+    def parser(customer_parser = nil)
+      if customer_parser.nil?
+        default_options[:parser]
+      else
+        default_options[:parser] = customer_parser
+        validate_format
+      end
     end
-    
+
     # Allows making a get request to a url.
     #
     #   class Foo
     #     include HTTParty
     #   end
-    #   
+    #
     #   # Simple get with full url
     #   Foo.get('http://foo.com/resource.json')
-    #   
+    #
     #   # Simple get with full url and query parameters
     #   # ie: http://foo.com/resource.json?limit=10
     #   Foo.get('http://foo.com/resource.json', :query => {:limit => 10})
     def get(path, options={})
       perform_request Net::HTTP::Get, path, options
     end
-    
+
     # Allows making a post request to a url.
     #
     #   class Foo
     #     include HTTParty
     #   end
-    #   
+    #
     #   # Simple post with full url and setting the body
     #   Foo.post('http://foo.com/resources', :body => {:bar => 'baz'})
     #
-    #   # Simple post with full url using :query option, 
+    #   # Simple post with full url using :query option,
     #   # which gets set as form data on the request.
     #   Foo.post('http://foo.com/resources', :query => {:bar => 'baz'})
     def post(path, options={})
@@ -159,12 +180,21 @@ module HTTParty
     def delete(path, options={})
       perform_request Net::HTTP::Delete, path, options
     end
-    
+
+    def head(path, options={})
+      perform_request Net::HTTP::Head, path, options
+    end
+
+    def options(path, options={})
+      perform_request Net::HTTP::Options, path, options
+    end
+
     def default_options #:nodoc:
       @default_options
     end
 
     private
+
       def perform_request(http_method, path, options) #:nodoc:
         options = default_options.dup.merge(options)
         process_cookies(options)
@@ -176,27 +206,33 @@ module HTTParty
         options[:headers] ||= headers.dup
         options[:headers]["cookie"] = cookies.merge(options.delete(:cookies) || {}).to_cookie_string
       end
+
+      def validate_format
+        if format && parser.respond_to?(:supports_format?) && !parser.supports_format?(format)
+          raise UnsupportedFormat, "'#{format.inspect}' Must be one of: #{parser.supported_formats.map{|f| f.to_s}.sort.join(', ')}"
+        end
+      end
   end
 
   def self.normalize_base_uri(url) #:nodoc:
     normalized_url = url.dup
     use_ssl = (normalized_url =~ /^https/) || normalized_url.include?(':443')
     ends_with_slash = normalized_url =~ /\/$/
-    
+
     normalized_url.chop! if ends_with_slash
     normalized_url.gsub!(/^https?:\/\//i, '')
-    
+
     "http#{'s' if use_ssl}://#{normalized_url}"
   end
-  
+
   class Basement #:nodoc:
     include HTTParty
   end
-  
+
   def self.get(*args)
     Basement.get(*args)
   end
-  
+
   def self.post(*args)
     Basement.post(*args)
   end
@@ -208,9 +244,20 @@ module HTTParty
   def self.delete(*args)
     Basement.delete(*args)
   end
+
+  def self.head(*args)
+    Basement.head(*args)
+  end
+
+  def self.options(*args)
+    Basement.options(*args)
+  end
+
 end
 
 require dir + 'httparty/core_extensions'
 require dir + 'httparty/exceptions'
+require dir + 'httparty/parser'
 require dir + 'httparty/request'
 require dir + 'httparty/response'
+
